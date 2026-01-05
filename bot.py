@@ -8,29 +8,17 @@ from collections import defaultdict, deque
 from urllib.parse import urlencode
 
 import httpx
-from telegram import (
-    Update,
-    ChatPermissions,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+from telegram import Update, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatMemberStatus, ChatAction
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
+    Application, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ContextTypes, filters
 )
 
 from config import Config
 import storage
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("protect-bot")
 
 BOT_START_TS = time.time()
@@ -38,15 +26,13 @@ BOT_START_TS = time.time()
 URL_RE = re.compile(r"(https?://|www\.)\S+", re.IGNORECASE)
 TME_RE = re.compile(r"(t\.me/|telegram\.me/|telegram\.dog/)\S+", re.IGNORECASE)
 
-MENTION_REGEX = re.compile(r"@\w+", re.UNICODE)
-
 # Flood memory
 flood: Dict[int, Dict[int, Deque[float]]] = defaultdict(lambda: defaultdict(deque))
 
 # Captcha pending
 captcha_pending: Dict[Tuple[int, int], Tuple[float, str]] = {}
 
-# Chatbot cooldown (biar gak spam)
+# Chatbot cooldown (anti spam)
 _ai_last: Dict[Tuple[int, int], float] = {}
 
 @dataclass
@@ -56,30 +42,21 @@ class DynamicLimits:
 
 def get_limits(chat_id: int) -> DynamicLimits:
     if storage.is_raid(chat_id):
-        return DynamicLimits(
-            captcha_timeout=Config.RAID_CAPTCHA_TIMEOUT_SEC,
-            flood_max=Config.RAID_FLOOD_MAX_MSG,
-        )
-    return DynamicLimits(
-        captcha_timeout=Config.CAPTCHA_TIMEOUT_SEC,
-        flood_max=Config.FLOOD_MAX_MSG,
-    )
+        return DynamicLimits(Config.RAID_CAPTCHA_TIMEOUT_SEC, Config.RAID_FLOOD_MAX_MSG)
+    return DynamicLimits(Config.CAPTCHA_TIMEOUT_SEC, Config.FLOOD_MAX_MSG)
 
 def fmt_uptime(seconds: int) -> str:
     seconds = max(0, int(seconds))
     d, rem = divmod(seconds, 86400)
     h, rem = divmod(rem, 3600)
     m, s = divmod(rem, 60)
-    if d > 0:
-        return f"{d}d {h}h {m}m {s}s"
-    if h > 0:
-        return f"{h}h {m}m {s}s"
-    if m > 0:
-        return f"{m}m {s}s"
+    if d > 0: return f"{d}d {h}h {m}m {s}s"
+    if h > 0: return f"{h}h {m}m {s}s"
+    if m > 0: return f"{m}m {s}s"
     return f"{s}s"
 
 def mention_html(user_id: int, name: str) -> str:
-    safe = (name or "user").replace("<", "").replace(">", "")
+    safe = (name or "user").replace("<","").replace(">","")
     return f'<a href="tg://user?id={user_id}">{safe}</a>'
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
@@ -90,7 +67,7 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: 
         return False
 
 async def restrict_user(chat_id: int, user_id: int, can_send: bool):
-    perms = ChatPermissions(
+    return ChatPermissions(
         can_send_messages=can_send,
         can_send_audios=can_send,
         can_send_documents=can_send,
@@ -102,11 +79,10 @@ async def restrict_user(chat_id: int, user_id: int, can_send: bool):
         can_send_other_messages=can_send,
         can_add_web_page_previews=can_send,
     )
-    return perms
 
-async def mute_for(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, seconds: int, reason: str = ""):
+async def mute_for(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, seconds: int, reason: str=""):
     until = int(time.time()) + seconds
-    perms = await restrict_user(chat_id, user_id, can_send=False)
+    perms = await restrict_user(chat_id, user_id, False)
     await context.bot.restrict_chat_member(chat_id, user_id, permissions=perms, until_date=until)
     if reason:
         try:
@@ -115,10 +91,10 @@ async def mute_for(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: in
             pass
 
 async def unmute(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
-    perms = await restrict_user(chat_id, user_id, can_send=True)
+    perms = await restrict_user(chat_id, user_id, True)
     await context.bot.restrict_chat_member(chat_id, user_id, permissions=perms)
 
-async def kick(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, reason: str = ""):
+async def kick(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, reason: str=""):
     await context.bot.ban_chat_member(chat_id, user_id)
     await context.bot.unban_chat_member(chat_id, user_id)
     if reason:
@@ -128,17 +104,9 @@ async def kick(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, r
             pass
 
 # =========================
-# CHATBOT (USERBOT STYLE) helpers
+# Chatbot (userbot style)
 # =========================
-def start_text_chatbot() -> str:
-    return (
-        "On.\n\n"
-        "• /setrole <teks>\n"
-        "• /role\n"
-        "• toggle di Settings (button)"
-    )
-
-def limit_response(text: str, max_sentences: int = 1, max_chars: int = 15) -> str:
+def limit_response(text: str, max_sentences: int=1, max_chars: int=15) -> str:
     if not text:
         return text
     text = text.strip()
@@ -146,7 +114,6 @@ def limit_response(text: str, max_sentences: int = 1, max_chars: int = 15) -> st
     text = re.sub(r"^\s*[-•]\s+", "", text, flags=re.MULTILINE).strip()
     parts = re.split(r"(?<=[.!?])\s+", text)
     short = " ".join(parts[:max_sentences]).strip() or text
-    short = short.strip()
     if len(short) > max_chars:
         short = short[:max_chars].rstrip()
     return short
@@ -161,7 +128,7 @@ async def call_siputzx(prompt: str, role: str) -> str | None:
         return None
 
     async with httpx.AsyncClient(timeout=20) as client:
-        # 1) gpt3: prompt(role) + content(user)
+        # gpt3 primary
         try:
             params = {"prompt": role, "content": prompt}
             url = f"{Config.SIPUTZX_GPT3_URL}?{urlencode(params)}"
@@ -181,7 +148,6 @@ async def call_siputzx(prompt: str, role: str) -> str | None:
                         c = val.get("content")
                         if isinstance(c, str) and c.strip():
                             return c.strip()
-
                     for v in js.values():
                         if isinstance(v, str) and v.strip():
                             return v.strip()
@@ -190,7 +156,7 @@ async def call_siputzx(prompt: str, role: str) -> str | None:
         except Exception:
             log.exception("Error call_siputzx (gpt3)")
 
-        # 2) fallback: /api/gpt?text=
+        # fallback
         try:
             url = f"{Config.SIPUTZX_GPT_URL}?{urlencode({'text': prompt})}"
             r = await client.get(url)
@@ -198,7 +164,6 @@ async def call_siputzx(prompt: str, role: str) -> str | None:
             if r.status_code != 200:
                 log.warning("Siputzx fallback non-200: %s %s", r.status_code, raw[:200])
                 return None
-
             js = r.json()
             if isinstance(js, dict):
                 data_obj = js.get("data")
@@ -206,7 +171,6 @@ async def call_siputzx(prompt: str, role: str) -> str | None:
                     content = data_obj.get("content")
                     if isinstance(content, str) and content.strip():
                         return content.strip()
-
                 for k in ("result", "answer", "message", "data"):
                     v = js.get(k)
                     if isinstance(v, str) and v.strip():
@@ -217,7 +181,7 @@ async def call_siputzx(prompt: str, role: str) -> str | None:
             return None
 
 # =========================
-# UI (Dashboard + Modules + Settings)
+# UI
 # =========================
 def home_keyboard():
     return InlineKeyboardMarkup([
@@ -229,62 +193,6 @@ def home_keyboard():
 
 def back_home_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Home", callback_data="ui:home")]])
-
-MODULE_TEXT = {
-    "protection": (
-        "<b>🛡 Protection</b>\n\n"
-        "• Anti flood spam\n"
-        "• Anti link (URL / t.me)\n"
-        "• Badword filter\n"
-        "• Auto mute/kick\n\n"
-        "Toggle di <b>Settings</b>."
-    ),
-    "captcha": (
-        "<b>👋 Captcha / Verify</b>\n\n"
-        "• Member baru wajib klik tombol\n"
-        "• Timeout = auto kick\n"
-        "• Skip whitelist\n\n"
-        "Toggle di <b>Settings</b>."
-    ),
-    "warn": (
-        "<b>⚠️ Warn System</b>\n\n"
-        "• /warn (reply)\n"
-        "• /unwarn\n"
-        "• /warns (reply)\n"
-        f"• Auto kick di {Config.WARN_LIMIT} warn"
-    ),
-    "whitelist": (
-        "<b>🧑‍💼 Whitelist</b>\n\n"
-        "• /allow (reply)\n"
-        "• /unallow\n"
-        "• /allowlist\n\n"
-        "Whitelist = kebal semua proteksi."
-    ),
-    "tagall": (
-        "<b>📢 TagAll</b>\n\n"
-        "• /tagall &lt;text&gt;\n"
-        "• /tagadmin &lt;text&gt;\n\n"
-        "TagAll = mention tracked members."
-    ),
-    "raid": (
-        "<b>🚨 Raid Mode</b>\n\n"
-        "• /raid on\n"
-        "• /raid off\n\n"
-        "Saat ON: captcha lebih ketat, flood lebih sensitif."
-    ),
-    "chatbot": (
-        "<b>🤖 Chatbot (Userbot style)</b>\n\n"
-        "• Toggle di Settings\n"
-        "• /setrole &lt;teks&gt;\n"
-        "• /role\n\n"
-        "Jawab singkat sesuai role."
-    ),
-    "ping": (
-        "<b>🏓 Ping</b>\n\n"
-        "• /ping\n"
-        "• Button Ping = quick status"
-    ),
-}
 
 def modules_main_keyboard():
     return InlineKeyboardMarkup([
@@ -308,30 +216,60 @@ def module_back_keyboard():
 
 def settings_keyboard(chat_id: int):
     s = storage.get_settings(chat_id)
-
-    def onoff(v: bool):
-        return "✅ ON" if v else "❌ OFF"
-
+    def onoff(v: bool): return "✅ ON" if v else "❌ OFF"
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"👋 CAPTCHA: {onoff(s['captcha'])}", callback_data="set:captcha")],
-        [InlineKeyboardButton(f"🛡 PROTECTION: {onoff(s['protection'])}", callback_data="set:protection")],
-        [InlineKeyboardButton(f"🤖 CHATBOT: {onoff(s['chatbot'])}", callback_data="set:chatbot")],
+        [InlineKeyboardButton(f"👋 CAPTCHA ({onoff(s['captcha'])})", callback_data="set:captcha")],
+        [InlineKeyboardButton(f"🛡 PROTECTION ({onoff(s['protection'])})", callback_data="set:protection")],
+        [InlineKeyboardButton(f"🤖 CHATBOT ({onoff(s['chatbot'])})", callback_data="set:chatbot")],
         [InlineKeyboardButton("⬅️ Back", callback_data="mod:main"),
          InlineKeyboardButton("🏠 Home", callback_data="ui:home")],
     ])
+
+def settings_text(chat_id: int) -> str:
+    s = storage.get_settings(chat_id)
+    def onoff(v: bool): return "✅ ON" if v else "❌ OFF"
+    return (
+        "<b>⚙️ Settings</b>\n\n"
+        f"• 👋 CAPTCHA: <b>{onoff(s['captcha'])}</b>\n"
+        "  └ Kunci member baru sampai verifikasi.\n\n"
+        f"• 🛡 PROTECTION: <b>{onoff(s['protection'])}</b>\n"
+        "  └ Anti spam (flood), anti link, filter kata.\n\n"
+        f"• 🤖 CHATBOT: <b>{onoff(s['chatbot'])}</b>\n"
+        "  └ Bot nimbrung jawab singkat sesuai role.\n"
+        "     /setrole &lt;teks&gt;  |  /role\n\n"
+        "<i>Note:</i> Bot harus admin + izin Delete/Restrict/Ban."
+    )
+
+MODULE_TEXT = {
+    "protection": "<b>🛡 Protection</b>\n• Anti flood\n• Anti link\n• Badword filter\n• Auto mute/kick\n\nToggle di Settings.",
+    "captcha": "<b>👋 Captcha</b>\nMember baru dimute sampai klik tombol.\nKalau timeout: auto kick.\n\nToggle di Settings.",
+    "warn": "<b>⚠️ Warn</b>\n/warn (reply)\n/unwarn\n/warns (reply)\nAuto kick di limit warn.",
+    "whitelist": "<b>🧑‍💼 Whitelist</b>\n/allow (reply)\n/unallow\n/allowlist\nWhitelist kebal proteksi.",
+    "tagall": "<b>📢 TagAll</b>\n/tagall <teks>\n/tagadmin <teks>\nMention member yang pernah aktif.",
+    "raid": "<b>🚨 Raid Mode</b>\n/raid on | /raid off\nSaat ON: captcha+flood lebih ketat.",
+    "chatbot": "<b>🤖 Chatbot</b>\nToggle di Settings.\nSet role: /setrole <teks>\nCek role: /role\nJawab super singkat.",
+    "ping": "<b>🏓 Ping</b>\n/ping + button Ping.",
+}
 
 # =========================
 # Commands
 # =========================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
+    chat_id = chat.id
+    s = storage.get_settings(chat_id)
+    def onoff(v: bool): return "✅ ON" if v else "❌ OFF"
     uptime = fmt_uptime(int(time.time() - BOT_START_TS))
     title = chat.title or "Private Chat"
     text = (
         "<b>🛡 Protection Dashboard</b>\n"
         f"• Chat: <b>{title}</b>\n"
         f"• Uptime: <b>{uptime}</b>\n\n"
-        "Pilih menu di bawah."
+        "<b>Status fitur:</b>\n"
+        f"• 👋 CAPTCHA: <b>{onoff(s['captcha'])}</b> — kunci member baru sampai verifikasi\n"
+        f"• 🛡 PROTECTION: <b>{onoff(s['protection'])}</b> — anti spam/link/badword\n"
+        f"• 🤖 CHATBOT: <b>{onoff(s['chatbot'])}</b> — balas singkat pakai role\n\n"
+        "Klik menu di bawah."
     )
     await update.message.reply_text(text, reply_markup=home_keyboard(), parse_mode="HTML")
 
@@ -341,21 +279,17 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t1 = time.time()
     latency_ms = int((t1 - t0) * 1000)
     uptime = fmt_uptime(int(time.time() - BOT_START_TS))
-    await msg.edit_text(
-        f"🏓 <b>Pong</b>\n• Latency: <b>{latency_ms} ms</b>\n• Uptime: <b>{uptime}</b>",
-        parse_mode="HTML",
-    )
+    await msg.edit_text(f"🏓 <b>Pong</b>\n• {latency_ms} ms\n• Uptime: <b>{uptime}</b>", parse_mode="HTML")
 
 async def cmd_raid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context, update.effective_user.id):
         return await update.message.reply_text("Admin only.")
-    if len(context.args) != 1 or context.args[0].lower() not in ("on", "off"):
+    if len(context.args) != 1 or context.args[0].lower() not in ("on","off"):
         return await update.message.reply_text("Usage: /raid on|off")
     enabled = context.args[0].lower() == "on"
     storage.set_raid(update.effective_chat.id, enabled)
     await update.message.reply_text(f"Raid mode: {'ON' if enabled else 'OFF'}")
 
-# Warn
 async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context, update.effective_user.id):
         return await update.message.reply_text("Admin only.")
@@ -368,7 +302,7 @@ async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         storage.set_warn(chat_id, target.id, 0)
         await kick(context, chat_id, target.id, reason=f"WARN limit ({Config.WARN_LIMIT})")
         return
-    await update.message.reply_text(f"Warn {target.id}: {newc}/{Config.WARN_LIMIT}")
+    await update.message.reply_text(f"Warn: {newc}/{Config.WARN_LIMIT}")
 
 async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context, update.effective_user.id):
@@ -378,17 +312,15 @@ async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target = update.message.reply_to_message.from_user
     chat_id = update.effective_chat.id
     newc = storage.inc_warn(chat_id, target.id, -1)
-    await update.message.reply_text(f"Warn {target.id}: {newc}/{Config.WARN_LIMIT}")
+    await update.message.reply_text(f"Warn: {newc}/{Config.WARN_LIMIT}")
 
 async def cmd_warns(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
         return await update.message.reply_text("Reply ke user buat cek warn.")
     target = update.message.reply_to_message.from_user
-    chat_id = update.effective_chat.id
-    c = storage.get_warn(chat_id, target.id)
-    await update.message.reply_text(f"Warn {target.id}: {c}/{Config.WARN_LIMIT}")
+    c = storage.get_warn(update.effective_chat.id, target.id)
+    await update.message.reply_text(f"Warn: {c}/{Config.WARN_LIMIT}")
 
-# Whitelist
 async def cmd_allow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context, update.effective_user.id):
         return await update.message.reply_text("Admin only.")
@@ -396,13 +328,13 @@ async def cmd_allow(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Reply ke user yang mau di-allow.")
     target = update.message.reply_to_message.from_user
     storage.add_whitelist(update.effective_chat.id, target.id)
-    await update.message.reply_text("Ok. Kebal semua proteksi.")
+    await update.message.reply_text("Ok. kebal.")
 
 async def cmd_unallow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context, update.effective_user.id):
         return await update.message.reply_text("Admin only.")
     if not update.message.reply_to_message:
-        return await update.message.reply_text("Reply ke user yang mau dicabut allow.")
+        return await update.message.reply_text("Reply ke user yang mau dicabut.")
     target = update.message.reply_to_message.from_user
     storage.remove_whitelist(update.effective_chat.id, target.id)
     await update.message.reply_text("Ok.")
@@ -415,36 +347,27 @@ async def cmd_allowlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Kosong.")
     await update.message.reply_text("Whitelist:\n" + "\n".join([f"- {uid}" for (uid,) in rows]))
 
-# TagAll (tracked)
 async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    uid = update.effective_user.id
-    if not await is_admin(update, context, uid):
+    if not await is_admin(update, context, update.effective_user.id):
         return await update.message.reply_text("Admin only.")
-
+    chat_id = update.effective_chat.id
     now = int(time.time())
     last = storage.get_tagall_last(chat_id)
     if now - last < Config.TAGALL_COOLDOWN_SEC:
-        sisa = Config.TAGALL_COOLDOWN_SEC - (now - last)
-        return await update.message.reply_text(f"Cooldown {sisa}s.")
-
+        return await update.message.reply_text("Cooldown.")
     rows = storage.get_members(chat_id, limit=Config.TAGALL_MAX_MEMBERS)
     if not rows:
         return await update.message.reply_text("Belum ada member ke-track.")
-
-    header = (" ".join(context.args).strip() or "TagAll:").replace("<", "").replace(">", "")
+    header = (" ".join(context.args).strip() or "TagAll:").replace("<","").replace(">","")
     mentions = []
     for (mid, first_name, username) in rows:
         name = first_name or (f"@{username}" if username else "user")
         mentions.append(mention_html(int(mid), name))
-
     storage.set_tagall_last(chat_id, now)
-
     chunk_size = max(5, min(40, Config.TAGALL_CHUNK_SIZE))
-    parts = [mentions[i:i + chunk_size] for i in range(0, len(mentions), chunk_size)]
-    for part in parts:
-        msg = f"<b>{header}</b>\n" + " ".join(part)
-        await update.message.reply_text(msg, parse_mode="HTML", disable_web_page_preview=True)
+    for i in range(0, len(mentions), chunk_size):
+        part = mentions[i:i+chunk_size]
+        await update.message.reply_text(f"<b>{header}</b>\n" + " ".join(part), parse_mode="HTML")
         await asyncio.sleep(1.0)
 
 async def cmd_tagadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -452,11 +375,10 @@ async def cmd_tagadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Admin only.")
     chat_id = update.effective_chat.id
     admins = await context.bot.get_chat_administrators(chat_id)
-    header = (" ".join(context.args).strip() or "Tag Admin:").replace("<", "").replace(">", "")
+    header = (" ".join(context.args).strip() or "Tag Admin:").replace("<","").replace(">","")
     mentions = [mention_html(a.user.id, a.user.first_name or "admin") for a in admins]
     await update.message.reply_text(f"<b>{header}</b>\n" + " ".join(mentions), parse_mode="HTML")
 
-# Chatbot role commands (ini yang kamu minta persis)
 async def cmd_setrole(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context, update.effective_user.id):
         return await update.message.reply_text("Admin only.")
@@ -481,11 +403,16 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data == "ui:home":
         uptime = fmt_uptime(int(time.time() - BOT_START_TS))
         title = q.message.chat.title or "Private Chat"
+        s = storage.get_settings(chat_id)
+        def onoff(v: bool): return "✅ ON" if v else "❌ OFF"
         text = (
             "<b>🛡 Protection Dashboard</b>\n"
             f"• Chat: <b>{title}</b>\n"
             f"• Uptime: <b>{uptime}</b>\n\n"
-            "Pilih menu di bawah."
+            "<b>Status fitur:</b>\n"
+            f"• 👋 CAPTCHA: <b>{onoff(s['captcha'])}</b>\n"
+            f"• 🛡 PROTECTION: <b>{onoff(s['protection'])}</b>\n"
+            f"• 🤖 CHATBOT: <b>{onoff(s['chatbot'])}</b>\n"
         )
         return await q.edit_message_text(text, reply_markup=home_keyboard(), parse_mode="HTML")
 
@@ -499,27 +426,24 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data == "ui:settings":
         if not await is_admin(update, context, update.effective_user.id):
             return await q.answer("Admin only.", show_alert=True)
-        return await q.edit_message_text(
-            "<b>⚙️ Settings</b>\nKlik ON/OFF:",
-            reply_markup=settings_keyboard(chat_id),
-            parse_mode="HTML",
-        )
+        return await q.edit_message_text(settings_text(chat_id), reply_markup=settings_keyboard(chat_id), parse_mode="HTML")
 
     if q.data == "ui:ping":
         uptime = fmt_uptime(int(time.time() - BOT_START_TS))
-        return await q.edit_message_text(
-            f"🏓 <b>ON</b>\n• Uptime: <b>{uptime}</b>",
-            reply_markup=back_home_keyboard(),
-            parse_mode="HTML",
-        )
+        return await q.edit_message_text(f"🏓 <b>ON</b>\n• Uptime: <b>{uptime}</b>", reply_markup=back_home_keyboard(), parse_mode="HTML")
 
     if q.data == "ui:chatbot":
         s = storage.get_settings(chat_id)
         state = "✅ ON" if s["chatbot"] else "❌ OFF"
+        role_preview = storage.get_role(chat_id, Config.DEFAULT_ROLE)
+        if len(role_preview) > 140:
+            role_preview = role_preview[:140] + "..."
         return await q.edit_message_text(
-            f"<b>🤖 Chatbot</b>\n• Status: <b>{state}</b>\n\n"
+            "<b>🤖 Chatbot (Userbot Style)</b>\n\n"
+            f"• Status: <b>{state}</b>\n\n"
             "Set role: /setrole &lt;teks&gt;\n"
-            "Cek role: /role",
+            "Cek role: /role\n\n"
+            f"<b>Role sekarang:</b>\n<code>{role_preview.replace('<','').replace('>','')}</code>",
             reply_markup=back_home_keyboard(),
             parse_mode="HTML",
         )
@@ -527,7 +451,6 @@ async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def modules_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    chat_id = q.message.chat.id
 
     if q.data == "mod:main":
         return await q.edit_message_text(
@@ -539,17 +462,12 @@ async def modules_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.data == "mod:settings":
         if not await is_admin(update, context, update.effective_user.id):
             return await q.answer("Admin only.", show_alert=True)
-        return await q.edit_message_text(
-            "<b>⚙️ Settings</b>\nKlik ON/OFF:",
-            reply_markup=settings_keyboard(chat_id),
-            parse_mode="HTML",
-        )
+        chat_id = q.message.chat.id
+        return await q.edit_message_text(settings_text(chat_id), reply_markup=settings_keyboard(chat_id), parse_mode="HTML")
 
     if q.data.startswith("mod:"):
         key = q.data.split(":", 1)[1]
-        text = MODULE_TEXT.get(key)
-        if not text:
-            return
+        text = MODULE_TEXT.get(key, "N/A")
         return await q.edit_message_text(text, reply_markup=module_back_keyboard(), parse_mode="HTML")
 
 async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -560,16 +478,13 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context, update.effective_user.id):
         return await q.answer("Admin only.", show_alert=True)
 
-    key = q.data.split(":", 1)[1]  # captcha/protection/chatbot
+    key = q.data.split(":", 1)[1]
     storage.toggle_setting(chat_id, key)
 
-    return await q.edit_message_text(
-        "<b>⚙️ Settings</b>\nKlik ON/OFF:",
-        reply_markup=settings_keyboard(chat_id),
-        parse_mode="HTML",
-    )
+    await q.answer("Updated ✅")
+    return await q.edit_message_text(settings_text(chat_id), reply_markup=settings_keyboard(chat_id), parse_mode="HTML")
 
-# Captcha verify callback
+# Captcha verify
 async def on_verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -642,7 +557,7 @@ async def on_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if storage.is_whitelisted(chat_id, u.id):
             continue
 
-        perms = await restrict_user(chat_id, u.id, can_send=False)
+        perms = await restrict_user(chat_id, u.id, False)
         await context.bot.restrict_chat_member(chat_id, u.id, permissions=perms)
 
         token = f"{chat_id}:{u.id}:{int(time.time())}"
@@ -665,39 +580,32 @@ async def on_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name=f"captcha:{chat_id}:{u.id}",
         )
 
-# Chatbot handler (userbot style)
+# Chatbot handler (FIX: only TEXT, no filters.Caption)
 async def chatbot_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_chat:
         return
-
     msg = update.message
     chat_id = update.effective_chat.id
 
-    # skip bot
     if msg.from_user and msg.from_user.is_bot:
         return
 
-    # ON/OFF chatbot
     cfg = storage.get_settings(chat_id)
     if not cfg["chatbot"]:
         return
 
-    user_text = (msg.text or msg.caption or "").strip()
+    user_text = (msg.text or "").strip()
     if not user_text:
         return
-
-    # (Opsional) jangan jawab command
     if user_text.startswith("/"):
         return
 
-    # Rate limit per user biar gak spam
     key = (chat_id, msg.from_user.id if msg.from_user else 0)
     now = time.time()
     if now - _ai_last.get(key, 0) < 4:
         return
     _ai_last[key] = now
 
-    # bersihin mention bot dari prompt (bukan delete message)
     if Config.STRIP_BOT_MENTION:
         bot_username = (context.bot.username or "").strip()
         if bot_username:
@@ -708,7 +616,7 @@ async def chatbot_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         try:
-            answer = await asyncio.wait_for(call_siputzx(prompt=user_text, role=role), timeout=Config.FAST_TIMEOUT)
+            answer = await asyncio.wait_for(call_siputzx(user_text, role), timeout=Config.FAST_TIMEOUT)
         except asyncio.TimeoutError:
             answer = None
 
@@ -729,26 +637,21 @@ async def guard_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = (update.message.text or update.message.caption or "").strip()
 
-    # tracking member always
     try:
         storage.upsert_member(chat_id, user.id, user.first_name, user.username)
     except Exception:
         pass
 
-    # whitelist immunity
     if storage.is_whitelisted(chat_id, user.id):
         return
 
-    # admin bypass
     if Config.ADMIN_BYPASS and await is_admin(update, context, user.id):
         return
 
-    # protection toggle
     s = storage.get_settings(chat_id)
     if not s["protection"]:
         return
 
-    # flood
     limits = get_limits(chat_id)
     now = time.time()
     dq = flood[chat_id][user.id]
@@ -760,7 +663,6 @@ async def guard_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await mute_for(context, chat_id, user.id, Config.FLOOD_MUTE_SEC, reason="Flood")
         return
 
-    # anti-link
     if text and Config.BLOCK_LINKS:
         is_url = bool(URL_RE.search(text))
         is_tme = bool(TME_RE.search(text)) if Config.BLOCK_TME else False
@@ -772,7 +674,6 @@ async def guard_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await mute_for(context, chat_id, user.id, 60, reason="Link")
             return
 
-    # bad words
     if text and Config.BAD_WORDS:
         low = text.lower()
         if any(w in low for w in Config.BAD_WORDS):
@@ -788,19 +689,17 @@ async def guard_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await mute_for(context, chat_id, user.id, Config.WARN_MUTE_SEC, reason=f"Badwords warn {wcount}")
             return
 
-# Global error handler
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     log.exception("Unhandled error", exc_info=context.error)
 
 def main():
     if not Config.BOT_TOKEN:
-        raise SystemExit("BOT_TOKEN kosong. Set env BOT_TOKEN dulu.")
+        raise SystemExit("BOT_TOKEN kosong. Isi .env BOT_TOKEN dulu.")
 
     storage.init_db()
 
     app = Application.builder().token(Config.BOT_TOKEN).build()
 
-    # commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("ping", cmd_ping))
     app.add_handler(CommandHandler("raid", cmd_raid))
@@ -816,23 +715,18 @@ def main():
     app.add_handler(CommandHandler("tagall", cmd_tagall))
     app.add_handler(CommandHandler("tagadmin", cmd_tagadmin))
 
-    # chatbot role commands
     app.add_handler(CommandHandler("setrole", cmd_setrole))
     app.add_handler(CommandHandler("role", cmd_role))
 
-    # callbacks
     app.add_handler(CallbackQueryHandler(on_verify_callback, pattern=r"^verify\|"))
     app.add_handler(CallbackQueryHandler(ui_callback, pattern=r"^ui:"))
     app.add_handler(CallbackQueryHandler(modules_callback, pattern=r"^mod:"))
     app.add_handler(CallbackQueryHandler(settings_callback, pattern=r"^set:"))
 
-    # events
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, on_new_members))
 
-    # chatbot BEFORE protection guard (biar gak ke-block)
-    app.add_handler(MessageHandler(((filters.TEXT & ~filters.COMMAND) | filters.Caption), chatbot_handler), group=0)
-
-    # protection guard
+    # FIX: only TEXT, avoid filters.Caption bug
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chatbot_handler), group=0)
     app.add_handler(MessageHandler(filters.ALL & ~filters.StatusUpdate.ALL, guard_messages), group=1)
 
     app.add_error_handler(on_error)
