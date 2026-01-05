@@ -6,7 +6,7 @@ load_dotenv()
 class Config:
     BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
-    # Captcha / New member (default values, can be toggled per chat via DB settings)
+    # Captcha / New member
     CAPTCHA_TIMEOUT_SEC = int(os.getenv("CAPTCHA_TIMEOUT_SEC", "90"))
     CAPTCHA_TEXT = os.getenv("CAPTCHA_TEXT", "Klik tombol untuk verifikasi dalam {sec} detik.")
 
@@ -23,21 +23,42 @@ class Config:
     BLOCK_LINKS = os.getenv("BLOCK_LINKS", "1") == "1"
     BLOCK_TME = os.getenv("BLOCK_TME", "1") == "1"
 
-    # Word filter (comma-separated)
+    # Word filter
     BAD_WORDS = [w.strip().lower() for w in os.getenv("BAD_WORDS", "scam,judol").split(",") if w.strip()]
 
     # Admin bypass
     ADMIN_BYPASS = os.getenv("ADMIN_BYPASS", "1") == "1"
 
-    # Raid mode defaults
+    # Raid mode
     RAID_CAPTCHA_TIMEOUT_SEC = int(os.getenv("RAID_CAPTCHA_TIMEOUT_SEC", "45"))
     RAID_FLOOD_MAX_MSG = int(os.getenv("RAID_FLOOD_MAX_MSG", "4"))
 
     # TagAll
     TAGALL_COOLDOWN_SEC = int(os.getenv("TAGALL_COOLDOWN_SEC", "90"))
-    TAGALL_CHUNK_SIZE = int(os.getenv("TAGALL_CHUNK_SIZE", "25"))  # safe range 5..40
+    TAGALL_CHUNK_SIZE = int(os.getenv("TAGALL_CHUNK_SIZE", "25"))
     TAGALL_MAX_MEMBERS = int(os.getenv("TAGALL_MAX_MEMBERS", "250"))
 
-    # Chatbot AI (Siputzx)
-    SIPUTZX_GPT_URL = os.getenv("SIPUTZX_GPT_URL", "https://apis-liart.vercel.app/api/gpt")
-    AI_MAX_CHARS = int(os.getenv("AI_MAX_CHARS", "600"))
+    # =========================
+    # CHATBOT (USERBOT STYLE)
+    # =========================
+    FAST_TIMEOUT = float(os.getenv("FAST_TIMEOUT", "4"))
+
+    DEFAULT_ROLE = os.getenv(
+        "DEFAULT_ROLE",
+        "Kamu adalah seorang yang lagi ngebalesin chat di dalam group chat. "
+        "Balasanmu harus menggunakan bahasa gaul sehari-hari ala anak gen z, sangat singkat, dan responsif. "
+        "Balasan tidak perlu selalu formal atau informatif, fokus saja pada reaksi emosional atau komentar cepat.\n"
+        "Jangan pernah menawarkan bantuan dan bertanya.\n"
+        "Jangan ngaku bot atau AI.\n"
+        "Jawaban singkat Maksimal 10 - 15 karakter.\n"
+        "kalo ada yang nanya/ada bacaan ubot, langsung ketik ini, ubot gacor di @asepvoid.\n"
+    )
+
+    SIPUTZX_GPT3_URL = os.getenv("SIPUTZX_GPT3_URL", "https://api.siputzx.my.id/api/ai/gpt3").strip()
+    SIPUTZX_GPT_URL = os.getenv("SIPUTZX_GPT_URL", "https://apis-liart.vercel.app/api/gpt").strip()
+
+    MAX_SENTENCES = int(os.getenv("MAX_SENTENCES", "1"))
+    MAX_CHARS = int(os.getenv("MAX_CHARS", "15"))
+
+    # kalau True: hapus mention @botusername dari teks prompt (bukan hapus message)
+    STRIP_BOT_MENTION = os.getenv("STRIP_BOT_MENTION", "1") == "1"
