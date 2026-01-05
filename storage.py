@@ -7,6 +7,11 @@ DB_PATH = "protection.db"
 def _conn():
     return sqlite3.connect(DB_PATH)
 
+def _add_column_if_missing(c, table: str, col: str, col_def: str):
+    cols = [r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()]
+    if col not in cols:
+        c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+
 def init_db():
     with _conn() as c:
         c.execute("""
@@ -51,16 +56,18 @@ def init_db():
         );
         """)
 
-        # settings per chat (captcha/protection/chatbot + role)
+        # settings base (compatible old db)
         c.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             chat_id INTEGER PRIMARY KEY,
             captcha_enabled INTEGER NOT NULL DEFAULT 1,
             protection_enabled INTEGER NOT NULL DEFAULT 1,
-            chatbot_enabled INTEGER NOT NULL DEFAULT 0,
-            chatbot_role TEXT
+            chatbot_enabled INTEGER NOT NULL DEFAULT 0
         );
         """)
+
+        # auto migrate: add chatbot_role if missing
+        _add_column_if_missing(c, "settings", "chatbot_role", "TEXT")
 
         c.commit()
 
@@ -156,11 +163,11 @@ def get_tagall_last(chat_id: int) -> int:
         row = c.execute("SELECT last_ts FROM tagall_cooldown WHERE chat_id=?", (chat_id,)).fetchone()
         return int(row[0]) if row else 0
 
-# ---- Settings ----
+# ---- Settings + Role ----
 def _ensure_settings_row(c, chat_id: int):
     c.execute("""
-        INSERT INTO settings(chat_id, captcha_enabled, protection_enabled, chatbot_enabled, chatbot_role)
-        VALUES(?, 1, 1, 0, NULL)
+        INSERT INTO settings(chat_id, captcha_enabled, protection_enabled, chatbot_enabled)
+        VALUES(?, 1, 1, 0)
         ON CONFLICT(chat_id) DO NOTHING
     """, (chat_id,))
 
