@@ -51,7 +51,6 @@ def init_db():
         );
         """)
 
-        # per-chat settings: toggle features
         c.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             chat_id INTEGER PRIMARY KEY,
@@ -100,36 +99,24 @@ def is_raid(chat_id: int) -> bool:
 # ---- Whitelist ----
 def is_whitelisted(chat_id: int, user_id: int) -> bool:
     with _conn() as c:
-        row = c.execute(
-            "SELECT 1 FROM whitelist WHERE chat_id=? AND user_id=?",
-            (chat_id, user_id),
-        ).fetchone()
+        row = c.execute("SELECT 1 FROM whitelist WHERE chat_id=? AND user_id=?", (chat_id, user_id)).fetchone()
         return bool(row)
 
 def add_whitelist(chat_id: int, user_id: int):
     with _conn() as c:
-        c.execute(
-            "INSERT OR IGNORE INTO whitelist(chat_id, user_id) VALUES(?,?)",
-            (chat_id, user_id),
-        )
+        c.execute("INSERT OR IGNORE INTO whitelist(chat_id, user_id) VALUES(?,?)", (chat_id, user_id))
         c.commit()
 
 def remove_whitelist(chat_id: int, user_id: int):
     with _conn() as c:
-        c.execute(
-            "DELETE FROM whitelist WHERE chat_id=? AND user_id=?",
-            (chat_id, user_id),
-        )
+        c.execute("DELETE FROM whitelist WHERE chat_id=? AND user_id=?", (chat_id, user_id))
         c.commit()
 
 def list_whitelist(chat_id: int) -> List[Tuple[int]]:
     with _conn() as c:
-        return c.execute(
-            "SELECT user_id FROM whitelist WHERE chat_id=?",
-            (chat_id,),
-        ).fetchall()
+        return c.execute("SELECT user_id FROM whitelist WHERE chat_id=?", (chat_id,)).fetchall()
 
-# ---- Members tracking (TagAll) ----
+# ---- Members tracking ----
 def upsert_member(chat_id: int, user_id: int, first_name: str | None, username: str | None):
     now = int(time.time())
     with _conn() as c:
@@ -167,7 +154,7 @@ def get_tagall_last(chat_id: int) -> int:
         row = c.execute("SELECT last_ts FROM tagall_cooldown WHERE chat_id=?", (chat_id,)).fetchone()
         return int(row[0]) if row else 0
 
-# ---- Settings (toggles) ----
+# ---- Settings ----
 def get_settings(chat_id: int) -> dict:
     with _conn() as c:
         row = c.execute("""
@@ -186,7 +173,6 @@ def set_setting(chat_id: int, key: str, value: bool):
         return
     col = cols[key]
     with _conn() as c:
-        # ensure row exists
         c.execute("""
             INSERT INTO settings(chat_id, captcha_enabled, protection_enabled, chatbot_enabled)
             VALUES(?, 1, 1, 0)
