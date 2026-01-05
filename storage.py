@@ -51,12 +51,14 @@ def init_db():
         );
         """)
 
+        # settings per chat (captcha/protection/chatbot + role)
         c.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             chat_id INTEGER PRIMARY KEY,
             captcha_enabled INTEGER NOT NULL DEFAULT 1,
             protection_enabled INTEGER NOT NULL DEFAULT 1,
-            chatbot_enabled INTEGER NOT NULL DEFAULT 0
+            chatbot_enabled INTEGER NOT NULL DEFAULT 0,
+            chatbot_role TEXT
         );
         """)
 
@@ -155,17 +157,29 @@ def get_tagall_last(chat_id: int) -> int:
         return int(row[0]) if row else 0
 
 # ---- Settings ----
+def _ensure_settings_row(c, chat_id: int):
+    c.execute("""
+        INSERT INTO settings(chat_id, captcha_enabled, protection_enabled, chatbot_enabled, chatbot_role)
+        VALUES(?, 1, 1, 0, NULL)
+        ON CONFLICT(chat_id) DO NOTHING
+    """, (chat_id,))
+
 def get_settings(chat_id: int) -> dict:
     with _conn() as c:
         row = c.execute("""
-            SELECT captcha_enabled, protection_enabled, chatbot_enabled
+            SELECT captcha_enabled, protection_enabled, chatbot_enabled, chatbot_role
             FROM settings WHERE chat_id=?
         """, (chat_id,)).fetchone()
 
         if not row:
-            return {"captcha": True, "protection": True, "chatbot": False}
+            return {"captcha": True, "protection": True, "chatbot": False, "role": None}
 
-        return {"captcha": bool(row[0]), "protection": bool(row[1]), "chatbot": bool(row[2])}
+        return {
+            "captcha": bool(row[0]),
+            "protection": bool(row[1]),
+            "chatbot": bool(row[2]),
+            "role": row[3],
+        }
 
 def set_setting(chat_id: int, key: str, value: bool):
     cols = {"captcha": "captcha_enabled", "protection": "protection_enabled", "chatbot": "chatbot_enabled"}
@@ -173,11 +187,7 @@ def set_setting(chat_id: int, key: str, value: bool):
         return
     col = cols[key]
     with _conn() as c:
-        c.execute("""
-            INSERT INTO settings(chat_id, captcha_enabled, protection_enabled, chatbot_enabled)
-            VALUES(?, 1, 1, 0)
-            ON CONFLICT(chat_id) DO NOTHING
-        """, (chat_id,))
+        _ensure_settings_row(c, chat_id)
         c.execute(f"UPDATE settings SET {col}=? WHERE chat_id=?", (1 if value else 0, chat_id))
         c.commit()
 
@@ -186,3 +196,15 @@ def toggle_setting(chat_id: int, key: str) -> dict:
     newv = not bool(s[key])
     set_setting(chat_id, key, newv)
     return get_settings(chat_id)
+
+def get_role(chat_id: int, default_role: str) -> str:
+    s = get_settings(chat_id)
+    role = (s.get("role") or "").strip()
+    return role if role else (default_role or "")
+
+def set_role(chat_id: int, role: str):
+    role = (role or "").strip()
+    with _conn() as c:
+        _ensure_settings_row(c, chat_id)
+        c.execute("UPDATE settings SET chatbot_role=? WHERE chat_id=?", (role[:3000], chat_id))
+        c.commit()
