@@ -39,11 +39,8 @@ URL_RE = re.compile(r"(https?://|www\.)\S+", re.IGNORECASE)
 TME_RE = re.compile(r"(t\.me/|telegram\.me/|telegram\.dog/)\S+", re.IGNORECASE)
 
 # ---- In-memory state ----
-# flood[chat_id][user_id] -> deque[timestamps]
 flood: Dict[int, Dict[int, Deque[float]]] = defaultdict(lambda: defaultdict(deque))
-
-# captcha_pending[(chat_id, user_id)] = (deadline_ts, verify_token)
-captcha_pending: Dict[Tuple[int, int], Tuple[float, str]] = {}
+captcha_pending: Dict[Tuple[int, int], Tuple[float, str]] = {}  # (chat_id,user_id)->(deadline,token)
 
 @dataclass
 class DynamicLimits:
@@ -116,77 +113,87 @@ async def unmute(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int)
 
 async def kick(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, reason: str = ""):
     await context.bot.ban_chat_member(chat_id, user_id)
-    await context.bot.unban_chat_member(chat_id, user_id)  # soft-kick
+    await context.bot.unban_chat_member(chat_id, user_id)
     if reason:
         try:
             await context.bot.send_message(chat_id, f"User {user_id} dikick. {reason}")
         except Exception:
             pass
 
-# ----------------- Inline Modules UI -----------------
+# ----------------- UI (Dashboard) -----------------
+def home_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📦 Modules", callback_data="ui:modules"),
+            InlineKeyboardButton("⚙️ Settings", callback_data="ui:settings"),
+        ],
+        [
+            InlineKeyboardButton("🏓 Ping", callback_data="ui:ping"),
+            InlineKeyboardButton("🤖 AI Chat", callback_data="ui:ai"),
+        ],
+        [
+            InlineKeyboardButton("🛡 Permission Check", callback_data="ui:perm"),
+        ],
+    ])
+
+def back_home_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Home", callback_data="ui:home")]
+    ])
+
+# ----------------- Modules UI -----------------
 MODULE_TEXT = {
     "protection": (
-        "<b>🛡 Protection Module</b>\n\n"
+        "<b>🛡 Protection</b>\n\n"
         "• Anti flood spam\n"
         "• Anti link (URL / t.me)\n"
         "• Badword filter\n"
-        "• Auto mute / kick\n\n"
-        "Toggle: /modules → ⚙️ Settings"
+        "• Auto mute/kick\n\n"
+        "Toggle di <b>Settings</b>."
     ),
     "captcha": (
-        "<b>👋 Captcha Module</b>\n\n"
-        "• Verifikasi member baru (button)\n"
+        "<b>👋 Captcha / Verify</b>\n\n"
+        "• Member baru wajib klik tombol\n"
         "• Timeout = auto kick\n"
-        "• Skip untuk whitelist\n\n"
-        "Toggle: /modules → ⚙️ Settings"
+        "• Skip whitelist\n\n"
+        "Toggle di <b>Settings</b>."
     ),
     "warn": (
-        "<b>⚠️ Warn Module</b>\n\n"
-        "Commands:\n"
+        "<b>⚠️ Warn System</b>\n\n"
         "• /warn (reply user)\n"
         "• /unwarn\n"
         "• /warns (reply user)\n"
-        "• Auto kick jika limit\n"
+        f"• Auto kick di {Config.WARN_LIMIT} warn"
     ),
     "whitelist": (
-        "<b>🧑‍💼 Whitelist Module</b>\n\n"
-        "Commands:\n"
+        "<b>🧑‍💼 Whitelist</b>\n\n"
         "• /allow (reply user)\n"
         "• /unallow\n"
         "• /allowlist\n\n"
         "Whitelist = kebal semua proteksi."
     ),
     "tagall": (
-        "<b>📢 TagAll Module</b>\n\n"
-        "Commands:\n"
-        "• /tagall [text]\n"
-        "• /tagadmin [text]\n\n"
-        "TagAll = tracked members (yang pernah aktif)."
+        "<b>📢 TagAll</b>\n\n"
+        "• /tagall &lt;text&gt;\n"
+        "• /tagadmin &lt;text&gt;\n\n"
+        "TagAll = mention tracked members (yang pernah aktif)."
     ),
     "raid": (
         "<b>🚨 Raid Mode</b>\n\n"
-        "Commands:\n"
         "• /raid on\n"
         "• /raid off\n\n"
         "Saat ON: captcha lebih ketat, flood lebih sensitif."
     ),
+    "chatbot": (
+        "<b>🤖 Chatbot AI</b>\n\n"
+        "• /ai &lt;prompt&gt;\n"
+        "• Jawab via API Siputzx\n\n"
+        "Toggle di <b>Settings</b>."
+    ),
     "ping": (
         "<b>🏓 Ping</b>\n\n"
         "• /ping = latency + uptime\n"
-        "• Button Ping = quick status\n"
-    ),
-    "chatbot": (
-        "<b>🤖 Chatbot AI</b>\n\n"
-        "• /ai <prompt>\n"
-        "• Pakai API Siputzx\n\n"
-        "Toggle: /modules → ⚙️ Settings"
-    ),
-    "settings": (
-        "<b>⚙️ Settings</b>\n\n"
-        "Klik tombol untuk ON/OFF fitur:\n"
-        "• CAPTCHA\n"
-        "• PROTECTION\n"
-        "• CHATBOT AI\n"
+        "• Button Ping = quick status"
     ),
 }
 
@@ -210,12 +217,14 @@ def modules_main_keyboard():
         ],
         [
             InlineKeyboardButton("⚙️ Settings", callback_data="mod:settings"),
+            InlineKeyboardButton("🏠 Home", callback_data="ui:home"),
         ],
     ])
 
-def back_keyboard():
+def module_back_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅️ Back", callback_data="mod:main")]
+        [InlineKeyboardButton("⬅️ Back", callback_data="mod:main")],
+        [InlineKeyboardButton("🏠 Home", callback_data="ui:home")],
     ])
 
 def settings_keyboard(chat_id: int):
@@ -229,81 +238,25 @@ def settings_keyboard(chat_id: int):
         [InlineKeyboardButton(f"🛡 PROTECTION: {onoff(s['protection'])}", callback_data="set:protection")],
         [InlineKeyboardButton(f"🤖 CHATBOT AI: {onoff(s['chatbot'])}", callback_data="set:chatbot")],
         [InlineKeyboardButton("⬅️ Back", callback_data="mod:main")],
+        [InlineKeyboardButton("🏠 Home", callback_data="ui:home")],
     ])
-
-async def modules_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    data = q.data
-    chat_id = q.message.chat.id
-
-    if data == "mod:main":
-        return await q.edit_message_text(
-            "<b>📦 Bot Modules</b>\n\nPilih modul untuk lihat fitur:",
-            reply_markup=modules_main_keyboard(),
-            parse_mode="HTML",
-        )
-
-    if data == "mod:settings":
-        if not await is_admin(update, context, update.effective_user.id):
-            return await q.answer("Admin only.", show_alert=True)
-        return await q.edit_message_text(
-            MODULE_TEXT["settings"],
-            reply_markup=settings_keyboard(chat_id),
-            parse_mode="HTML",
-        )
-
-    if data == "mod:ping":
-        # quick status
-        uptime = fmt_uptime(int(time.time() - BOT_START_TS))
-        return await q.edit_message_text(
-            f"🏓 <b>Pong</b>\n"
-            f"• Uptime: <b>{uptime}</b>\n"
-            f"• Status: <b>ON</b>",
-            reply_markup=back_keyboard(),
-            parse_mode="HTML",
-        )
-
-    if data.startswith("mod:"):
-        key = data.split(":", 1)[1]
-        text = MODULE_TEXT.get(key)
-        if not text:
-            return
-        await q.edit_message_text(text, reply_markup=back_keyboard(), parse_mode="HTML")
-
-async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    chat_id = q.message.chat.id
-    if not await is_admin(update, context, update.effective_user.id):
-        return await q.answer("Admin only.", show_alert=True)
-
-    key = q.data.split(":", 1)[1]  # captcha / protection / chatbot
-    storage.toggle_setting(chat_id, key)
-
-    await q.edit_message_text(
-        "<b>⚙️ Settings</b>\n\nKlik tombol untuk ON/OFF fitur:",
-        reply_markup=settings_keyboard(chat_id),
-        parse_mode="HTML",
-    )
 
 # ----------------- Commands -----------------
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Protection bot aktif.\n"
-        "Cek fitur: /modules\n"
-        "Ping: /ping\n"
-        "AI: /ai <prompt> (kalau ON)\n"
-    )
+    chat = update.effective_chat
+    uptime = fmt_uptime(int(time.time() - BOT_START_TS))
+    title = chat.title or "Private Chat"
 
-async def cmd_modules(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "<b>📦 Bot Modules</b>\n\nPilih modul untuk lihat fitur:",
-        reply_markup=modules_main_keyboard(),
-        parse_mode="HTML",
+    text = (
+        "<b>🛡 Protection Dashboard</b>\n"
+        f"• Chat: <b>{title}</b>\n"
+        f"• Uptime: <b>{uptime}</b>\n\n"
+        "Klik menu di bawah."
     )
+    await update.message.reply_text(text, reply_markup=home_keyboard(), parse_mode="HTML")
+
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await cmd_start(update, context)
 
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t0 = time.time()
@@ -348,7 +301,7 @@ async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context, update.effective_user.id):
         return await update.message.reply_text("Admin only.")
     if not update.message.reply_to_message:
-        return await update.message.reply_text("Reply ke pesan user yang mau dikurangin warn.")
+        return await update.message.reply_text("Reply ke user yang mau dikurangin warn.")
     target = update.message.reply_to_message.from_user
     chat_id = update.effective_chat.id
     newc = storage.inc_warn(chat_id, target.id, -1)
@@ -356,7 +309,7 @@ async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_warns(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
-        return await update.message.reply_text("Reply ke pesan user buat cek warn.")
+        return await update.message.reply_text("Reply ke user buat cek warn.")
     target = update.message.reply_to_message.from_user
     chat_id = update.effective_chat.id
     c = storage.get_warn(chat_id, target.id)
@@ -381,7 +334,7 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await unmute(context, update.effective_chat.id, target.id)
     await update.message.reply_text(f"Unmuted {target.id}")
 
-# ---- Whitelist commands ----
+# ---- Whitelist ----
 async def cmd_allow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context, update.effective_user.id):
         return await update.message.reply_text("Admin only.")
@@ -441,15 +394,12 @@ async def cmd_tagall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     storage.set_tagall_last(chat_id, now)
 
     for part in parts:
-        text = f"<b>{header}</b>\n" + " ".join(part)
-
-        # prevent too long
-        if len(text) > 3900:
-            while len(text) > 3900 and part:
+        msg = f"<b>{header.replace('<','').replace('>','')}</b>\n" + " ".join(part)
+        if len(msg) > 3900:
+            while len(msg) > 3900 and part:
                 part.pop()
-                text = f"<b>{header}</b>\n" + " ".join(part)
-
-        await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
+                msg = f"<b>{header.replace('<','').replace('>','')}</b>\n" + " ".join(part)
+        await update.message.reply_text(msg, parse_mode="HTML", disable_web_page_preview=True)
         await asyncio.sleep(1.0)
 
 async def cmd_tagadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -457,7 +407,7 @@ async def cmd_tagadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("Admin only.")
     chat_id = update.effective_chat.id
     admins = await context.bot.get_chat_administrators(chat_id)
-    header = " ".join(context.args).strip() or "Tag Admin:"
+    header = (" ".join(context.args).strip() or "Tag Admin:").replace("<","").replace(">","")
 
     mentions = []
     for a in admins:
@@ -469,16 +419,16 @@ async def cmd_tagadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
-# ---- Chatbot AI (Siputzx) ----
+# ---- Chatbot AI ----
 async def cmd_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     s = storage.get_settings(chat_id)
     if not s["chatbot"]:
-        return await update.message.reply_text("Chatbot AI lagi OFF. Admin nyalain di /modules → ⚙️ Settings.")
+        return await update.message.reply_text("Chatbot AI OFF. Nyalain di Settings (button).")
 
     prompt = " ".join(context.args).strip()
     if not prompt:
-        return await update.message.reply_text("Usage: /ai <pertanyaan>")
+        return await update.message.reply_text("Usage: /ai <prompt>")
 
     prompt = prompt[:Config.AI_MAX_CHARS]
 
@@ -489,80 +439,123 @@ async def cmd_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
             data = r.json()
 
         ans = (data.get("data") or {}).get("content") or data.get("message") or "No response."
-        ans = str(ans).strip()
-        if not ans:
-            ans = "AI-nya lagi diem. Coba ulang."
-
+        ans = str(ans).strip() or "AI-nya lagi diem. Coba ulang."
         if len(ans) > 3500:
             ans = ans[:3500] + "..."
-
         await update.message.reply_text(ans)
     except Exception as e:
         await update.message.reply_text(f"AI error: {e}")
 
-# ----------------- Captcha / New members -----------------
-async def on_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
+# ----------------- Callbacks: UI -----------------
+async def ui_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    chat_id = q.message.chat.id
 
-    # track joiners (for tagall)
-    for u in update.message.new_chat_members:
-        try:
-            storage.upsert_member(chat_id, u.id, u.first_name, u.username)
-        except Exception:
-            pass
+    if q.data == "ui:home":
+        uptime = fmt_uptime(int(time.time() - BOT_START_TS))
+        title = q.message.chat.title or "Private Chat"
+        text = (
+            "<b>🛡 Protection Dashboard</b>\n"
+            f"• Chat: <b>{title}</b>\n"
+            f"• Uptime: <b>{uptime}</b>\n\n"
+            "Klik menu di bawah."
+        )
+        return await q.edit_message_text(text, reply_markup=home_keyboard(), parse_mode="HTML")
 
-    settings = storage.get_settings(chat_id)
-    if not settings["captcha"]:
-        return  # captcha OFF => do nothing
-
-    limits = get_limits(chat_id)
-
-    for u in update.message.new_chat_members:
-        # whitelist immunity
-        if storage.is_whitelisted(chat_id, u.id):
-            continue
-
-        # mute first
-        perms = await restrict_user(chat_id, u.id, can_send=False)
-        await context.bot.restrict_chat_member(chat_id, u.id, permissions=perms)
-
-        token = f"{chat_id}:{u.id}:{int(time.time())}"
-        deadline = time.time() + limits.captcha_timeout
-        captcha_pending[(chat_id, u.id)] = (deadline, token)
-
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Saya manusia (klik)", callback_data=f"verify|{token}")]
-        ])
-
-        text = Config.CAPTCHA_TEXT.format(sec=limits.captcha_timeout)
-        await update.message.reply_text(
-            f"Halo {u.mention_html()}.\n{text}",
-            reply_markup=kb,
+    if q.data == "ui:modules":
+        return await q.edit_message_text(
+            "<b>📦 Modules</b>\nKlik modul untuk lihat detail:",
+            reply_markup=modules_main_keyboard(),
             parse_mode="HTML",
         )
 
-        context.job_queue.run_once(
-            captcha_timeout_job,
-            when=limits.captcha_timeout + 1,
-            data={"chat_id": chat_id, "user_id": u.id, "token": token},
-            name=f"captcha:{chat_id}:{u.id}",
+    if q.data == "ui:settings":
+        if not await is_admin(update, context, update.effective_user.id):
+            return await q.answer("Admin only.", show_alert=True)
+        return await q.edit_message_text(
+            "<b>⚙️ Settings</b>\nKlik untuk ON/OFF fitur:",
+            reply_markup=settings_keyboard(chat_id),
+            parse_mode="HTML",
         )
 
-async def captcha_timeout_job(context: ContextTypes.DEFAULT_TYPE):
-    data = context.job.data
-    chat_id = data["chat_id"]
-    user_id = data["user_id"]
-    token = data["token"]
+    if q.data == "ui:ping":
+        uptime = fmt_uptime(int(time.time() - BOT_START_TS))
+        return await q.edit_message_text(
+            f"🏓 <b>Pong</b>\n• Status: <b>ON</b>\n• Uptime: <b>{uptime}</b>",
+            reply_markup=back_home_keyboard(),
+            parse_mode="HTML",
+        )
 
-    key = (chat_id, user_id)
-    if key not in captcha_pending:
-        return
-    deadline, saved_token = captcha_pending[key]
-    if saved_token != token:
-        return
-    if time.time() >= deadline:
-        captcha_pending.pop(key, None)
-        await kick(context, chat_id, user_id, reason="Captcha timeout")
+    if q.data == "ui:ai":
+        s = storage.get_settings(chat_id)
+        state = "✅ ON" if s["chatbot"] else "❌ OFF"
+        text = (
+            "<b>🤖 AI Chat</b>\n"
+            f"• Status: <b>{state}</b>\n\n"
+            "Cara pakai:\n"
+            "• /ai &lt;prompt&gt;\n\n"
+            "Kalau OFF: nyalain dulu di Settings."
+        )
+        return await q.edit_message_text(text, reply_markup=back_home_keyboard(), parse_mode="HTML")
+
+    if q.data == "ui:perm":
+        text = (
+            "<b>🛡 Permission Checklist</b>\n\n"
+            "Biar semua fitur jalan, bot harus admin + izin:\n"
+            "• Delete messages\n"
+            "• Restrict members (mute)\n"
+            "• Ban users (kick)\n"
+        )
+        return await q.edit_message_text(text, reply_markup=back_home_keyboard(), parse_mode="HTML")
+
+# ----------------- Callbacks: Modules + Settings + Captcha verify -----------------
+async def modules_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    chat_id = q.message.chat.id
+
+    data = q.data
+
+    if data == "mod:main":
+        return await q.edit_message_text(
+            "<b>📦 Modules</b>\nKlik modul untuk lihat detail:",
+            reply_markup=modules_main_keyboard(),
+            parse_mode="HTML",
+        )
+
+    if data == "mod:settings":
+        if not await is_admin(update, context, update.effective_user.id):
+            return await q.answer("Admin only.", show_alert=True)
+        return await q.edit_message_text(
+            "<b>⚙️ Settings</b>\nKlik untuk ON/OFF fitur:",
+            reply_markup=settings_keyboard(chat_id),
+            parse_mode="HTML",
+        )
+
+    if data.startswith("mod:"):
+        key = data.split(":", 1)[1]
+        text = MODULE_TEXT.get(key)
+        if not text:
+            return
+        return await q.edit_message_text(text, reply_markup=module_back_keyboard(), parse_mode="HTML")
+
+async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    chat_id = q.message.chat.id
+
+    if not await is_admin(update, context, update.effective_user.id):
+        return await q.answer("Admin only.", show_alert=True)
+
+    key = q.data.split(":", 1)[1]  # captcha/protection/chatbot
+    storage.toggle_setting(chat_id, key)
+
+    return await q.edit_message_text(
+        "<b>⚙️ Settings</b>\nKlik untuk ON/OFF fitur:",
+        reply_markup=settings_keyboard(chat_id),
+        parse_mode="HTML",
+    )
 
 async def on_verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -598,7 +591,68 @@ async def on_verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception:
         pass
 
-# ----------------- Message guard -----------------
+async def captcha_timeout_job(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data
+    chat_id = data["chat_id"]
+    user_id = data["user_id"]
+    token = data["token"]
+
+    key = (chat_id, user_id)
+    if key not in captcha_pending:
+        return
+    deadline, saved_token = captcha_pending[key]
+    if saved_token != token:
+        return
+    if time.time() >= deadline:
+        captcha_pending.pop(key, None)
+        await kick(context, chat_id, user_id, reason="Captcha timeout")
+
+# ----------------- Events -----------------
+async def on_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+
+    # track joiners for tagall
+    for u in update.message.new_chat_members:
+        try:
+            storage.upsert_member(chat_id, u.id, u.first_name, u.username)
+        except Exception:
+            pass
+
+    s = storage.get_settings(chat_id)
+    if not s["captcha"]:
+        return  # captcha OFF
+
+    limits = get_limits(chat_id)
+
+    for u in update.message.new_chat_members:
+        if storage.is_whitelisted(chat_id, u.id):
+            continue
+
+        perms = await restrict_user(chat_id, u.id, can_send=False)
+        await context.bot.restrict_chat_member(chat_id, u.id, permissions=perms)
+
+        token = f"{chat_id}:{u.id}:{int(time.time())}"
+        deadline = time.time() + limits.captcha_timeout
+        captcha_pending[(chat_id, u.id)] = (deadline, token)
+
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Saya manusia (klik)", callback_data=f"verify|{token}")]
+        ])
+
+        text = Config.CAPTCHA_TEXT.format(sec=limits.captcha_timeout)
+        await update.message.reply_text(
+            f"Halo {u.mention_html()}.\n{text}",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+
+        context.job_queue.run_once(
+            captcha_timeout_job,
+            when=limits.captcha_timeout + 1,
+            data={"chat_id": chat_id, "user_id": u.id, "token": token},
+            name=f"captcha:{chat_id}:{u.id}",
+        )
+
 async def guard_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.effective_chat or not update.effective_user:
         return
@@ -607,26 +661,26 @@ async def guard_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = (update.message.text or update.message.caption or "").strip()
 
-    # Always track members for tagall
+    # track members always (for tagall)
     try:
         storage.upsert_member(chat_id, user.id, user.first_name, user.username)
     except Exception:
         pass
 
-    # Absolute whitelist immunity
+    # whitelist immunity
     if storage.is_whitelisted(chat_id, user.id):
         return
 
-    # Admin bypass (optional)
+    # admin bypass
     if Config.ADMIN_BYPASS and await is_admin(update, context, user.id):
         return
 
-    # Protection toggle
-    settings = storage.get_settings(chat_id)
-    if not settings["protection"]:
+    # protection toggle
+    s = storage.get_settings(chat_id)
+    if not s["protection"]:
         return
 
-    # Flood control
+    # flood control
     limits = get_limits(chat_id)
     now = time.time()
     dq = flood[chat_id][user.id]
@@ -638,7 +692,7 @@ async def guard_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await mute_for(context, chat_id, user.id, Config.FLOOD_MUTE_SEC, reason="Flood detected")
         return
 
-    # Anti-link
+    # anti-link
     if text and Config.BLOCK_LINKS:
         is_url = bool(URL_RE.search(text))
         is_tme = bool(TME_RE.search(text)) if Config.BLOCK_TME else False
@@ -650,7 +704,7 @@ async def guard_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await mute_for(context, chat_id, user.id, 60, reason="Link blocked")
             return
 
-    # Bad words
+    # bad words
     if text and Config.BAD_WORDS:
         low = text.lower()
         if any(w in low for w in Config.BAD_WORDS):
@@ -667,6 +721,10 @@ async def guard_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await mute_for(context, chat_id, user.id, Config.WARN_MUTE_SEC, reason=f"Bad words (warn {wcount})")
             return
 
+# ----------------- Error handler -----------------
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    log.exception("Unhandled error", exc_info=context.error)
+
 def main():
     if not Config.BOT_TOKEN:
         raise SystemExit("BOT_TOKEN kosong. Set env BOT_TOKEN dulu.")
@@ -677,37 +735,33 @@ def main():
 
     # commands
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("modules", cmd_modules))
+    app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("ping", cmd_ping))
-
     app.add_handler(CommandHandler("raid", cmd_raid))
-
     app.add_handler(CommandHandler("warn", cmd_warn))
     app.add_handler(CommandHandler("unwarn", cmd_unwarn))
     app.add_handler(CommandHandler("warns", cmd_warns))
-
     app.add_handler(CommandHandler("mute", cmd_mute))
     app.add_handler(CommandHandler("unmute", cmd_unmute))
-
     app.add_handler(CommandHandler("allow", cmd_allow))
     app.add_handler(CommandHandler("unallow", cmd_unallow))
     app.add_handler(CommandHandler("allowlist", cmd_allowlist))
-
     app.add_handler(CommandHandler("tagall", cmd_tagall))
     app.add_handler(CommandHandler("tagadmin", cmd_tagadmin))
-
     app.add_handler(CommandHandler("ai", cmd_ai))
 
     # callbacks
     app.add_handler(CallbackQueryHandler(on_verify_callback, pattern=r"^verify\|"))
+    app.add_handler(CallbackQueryHandler(ui_callback, pattern=r"^ui:"))
     app.add_handler(CallbackQueryHandler(modules_callback, pattern=r"^mod:"))
     app.add_handler(CallbackQueryHandler(settings_callback, pattern=r"^set:"))
 
-    # new members (captcha)
+    # events
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, on_new_members))
-
-    # protection guard
     app.add_handler(MessageHandler(filters.ALL & ~filters.StatusUpdate.ALL, guard_messages))
+
+    # global error handler
+    app.add_error_handler(on_error)
 
     log.info("Bot running...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
